@@ -1,0 +1,555 @@
+---
+title: "Olink_R_analysis.qmd"
+format: html
+editor: visual
+---
+
+## Olink data analysis with R
+
+### 1. Project Setup and Environment Management (with renv)
+
+```{r}
+renv::restore()
+```
+
+### 2. Load R packages and self-defined functions
+
+-   OlinkAnalyze 4.4.0 (released Dec 2, 2025) was tested in this study.
+
+```{r}
+#| label: load-libraries
+#| warning: false
+#| message: false
+#| cache: false
+
+library(tidyverse)
+library(magrittr)
+library(OlinkAnalyze)
+library(knitr)
+library(kableExtra)
+
+source("R/olink_helpers.R")
+```
+
+### 3. Load Olink data
+
+-   The two Olink parquet files are available at T-drive, and are accessible under /Volumes/DCEG/CGF/ after mounting to MacOSX (smb://gigantor.nci.nih.gov and select the volumne ***DCEG***).
+-   Two Olink projects
+    -   RP0084-045 (rp2)
+    -   CS036024; Q-13387-3 (d1)
+
+```{r}
+#| label: load-olink-data
+#| cache: true
+
+rp2_olink_fn <- "/Volumes/DCEG/CGF/Laboratory/Projects/MR-0084/RP0084-045/Data/NPXMap Exports/RP0084-045_Extended_NPX_2025-10-27.parquet"
+d1_olink_fn <- "/Volumes/DCEG/CGF/Laboratory/Projects/DESL Aliquoting Projects/NAS_CS036024/Olink_DataDelivery/Q-13387_Hutchinson_Extended_NPX_2024-06-26.parquet"
+
+rp2_npx <- read_NPX(rp2_olink_fn)
+
+dim(rp2_npx)
+
+rp2_npx %>%
+  head() %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = FALSE) %>%
+  scroll_box(width = "100%")
+
+# drive sample information from the parquet data frame
+rp2_sam <- rp2_npx %>% select(1:4) %>%
+  unique %>% 
+  rename(plate = PlateID, well = WellID) %>%
+  mutate(column = paste0("Column ", substr(well, 2, 3))) %>%
+  mutate(row = substr(well, 1, 1))
+
+rp2_sam 
+```
+
+::: callout-tip
+## 783,360 rows in the data frame rp2
+
+There are 144 samples in the project rp2 and 5440 assays for each sample.
+
+5440\*144 = 783360
+:::
+
+### 4. Plot Olink plates
+
+```{r}
+#| label: fig-olink-plate
+#| fig-cap: "Olink late plots of rp2"
+#| cache: true
+
+OlinkAnalyze::olink_displayPlateLayout(data = rp2_sam, fill.color="SampleType")
+```
+
+### 5. Olink QC
+
+-   In SampleQC column:
+    -   **"PASS"**: Datapoints from samples that pass all Sample QC criteria.
+    -   **"FAIL"**: Datapoints from samples that fail in any of the Sample QC criteria.
+    -   **"WARN"**: Datapoints from samples that get warning in any of the QC criteria.
+    -   **"NA"**: Datapoints related to an excluded assay.
+-   In AssayQC column:
+    -   **"PASS"**: Datapoints from assays that pass the assay QC criteria.
+    -   **"WARN"**: Datapoints from assays that get warning in assay QC.
+    -   **"NA"**: Datapoints related to excluded assays, internal controls, or assays where QC cannot be performed due to failed negative controls.
+
+#### Function Definition: `inspect_olink_qc`
+
+The `OlinkAnalyze` package contains an internal function, `npxCheck()`, which validates NPX data integrity and identifies cases where entire samples or assays consist of missing values (NA). However, it does not provide granular details regarding Sample-Block QC status, nor does it explicitly report on assays or samples flagged with a "WARN" status. To address this, we define the custom function `inspect_olink_qc`. This function extends standard validation by summarizing Olink QC flags across specific blocks, providing a clearer overview of data quality for downstream analysis.
+
+```{r}
+#| label: fun-inspect_olink_qc
+#| eval: false
+inspect_olink_qc <- function(dat) {
+  
+  # 1. Identify Assays that are not "PASS" (excluding controls)
+  # Filtering for AssayType=="assay" ensures we focus on actual targets
+  flagged_assays <- dat |> 
+    filter(AssayType == "assay") |> 
+    select(OlinkID, Assay, Block, AssayQC) |> 
+    distinct() |> 
+    filter(AssayQC != "PASS")
+  
+  # 2. Identify unique SampleIDs that are not "PASS" or "NA"
+  # Based on Olink definitions, "NA" usually refers to excluded assays, not failed samples
+  flagged_sample_ids <- dat |> 
+    filter(!SampleQC %in% c("NA", "PASS")) |> 
+    pull(SampleID) |> 
+    unique()
+  
+  # 3. Create a block-wise matrix of SampleQC status for flagged samples
+  # This helps visualize if a sample failed across all blocks or just one
+  flagged_samples_matrix <- dat |> 
+    filter(SampleID %in% flagged_sample_ids) |>
+    group_by(SampleID, Block, SampleQC) |> 
+    summarise(N = n(), .groups = 'drop') |>
+    mutate(status_label = paste0(SampleQC, " (n=", N, ")")) |>
+    group_by(SampleID, Block) |> 
+    summarise(QC = stringr::str_flatten(status_label, collapse = ", "), .groups = 'drop') |> 
+    tidyr::pivot_wider(names_from = Block, values_from = QC)
+  
+  # Return results as a named list
+  list(
+    flagged_assays = flagged_assays, 
+    flagged_sample_ids = flagged_sample_ids,
+    flagged_samples_matrix = flagged_samples_matrix
+  )
+}
+```
+
+::: callout-tip
+## Internal controls have AssayQC as "NA"
+
+*filter(AssayType == "assay")* is applied to exclude all internal controls.
+:::
+
+```{r}
+#| label: tbl-qc-combined
+#| tbl-cap: "Comprehensive QC Results"
+#| tbl-subcap: 
+#|   - "Assay-level Flags"
+#|   - "Sample-level Matrix"
+#| layout-ncol: 1
+qc_results <- inspect_olink_qc(rp2_npx)
+
+qc_results$flagged_assays
+qc_results$flagged_samples_matrix
+```
+
+#### QC Summary
+
+::: callout-important
+## QC Summary: Flagged Assays and Samples
+
+-   Quality control analysis of the rp2_npx dataset identified 16 flagged assays and six problematic samples across eight blocks. The assay-level QC revealed that 15 proteins (spread across Blocks 2, 3, 4, and 5) were categorized as "NA," indicating they were excluded from standard processing, while one assay (C6orf118 in Block 2) received a "WARN" status.
+-   Sample-level analysis showed two distinct groups of performance: the "IA" group (IA_7060_1158_1/2) consistently passed most blocks but triggered "WARN" flags in Block 3, whereas the "IR" group (IR_4935_1158_1/2/3/4) exhibited severe failures, specifically a complete "FAIL" in Block 1 and varying degrees of "FAIL" or "WARN" across Blocks 2, 3, and 4. While all samples performed well in Blocks 5, 6, 7, and 8, the widespread issues in the first four blocks—particularly for the "IR" samples—suggest these data points should be handled with caution or excluded to maintain study integrity.
+:::
+
+------------------------------------------------------------------------
+
+### 6. Visualizations
+
+#### Heatmap
+
+```{r}
+#| label: fig-heatmap
+#| fig-cap: "Olink NPX Heatmap"
+#| fig-width: 14
+#| fig-height: 14
+
+
+### fontsize_row does not work so I have to change fontsize 
+olink_heatmap_plot(rp2_npx, variable_row_list =  'SampleType', variable_col_list = "Block", show_colnames=F, cluster_cols=F, center_scale=T, fontsize=6, fontsize_row = 2)
+```
+
+::: callout-tip
+## Notes on Heatmap Generation
+
+-   **Data Scaling:** By default, NPX values are centered and scaled (Z-score standardized) across assays.
+-   **Assay Filtering:** 15 assays were excluded due to an `AssayQC` status of `FAIL`.
+-   **Sample Quality:** NPX values for samples with a `SampleQC` status of `FAIL` are set to `NA`. These are represented by **black bars** in the heatmap.
+:::
+
+#### Generates boxplots of NPX vs. SampleID using `olink_dist_plot`
+
+-   We assigned pandel value by PlateID here
+
+Boxplots of NPX is another way to visualization the distribution of NPX values in each sample.
+
+```{r}
+#| label: fig-dist-plot
+#| fig-cap: "NPX distribution by panel"
+#| fig-width: 18
+#| fig-height: 30
+
+p <- rp2_npx |>
+  olink_dist_plot(color_g = "SampleQC") + 
+  facet_grid(Block ~ PlateID, scales = "free_x", space = "free_x") + 
+  theme(axis.text.x = element_text(angle = 90, size = 8, vjust = 0.5, hjust = 1))
+
+p$layers[[1]]$geom_params$outlier_gp$alpha <- 0.5
+p$layers[[1]]$geom_params$outlier_gp$size <- 0.5
+p$layers[[1]]$geom_params$outlier_gp$shape <- 21
+p$layers[[1]]$geom_params$outlier_gp$colour <- "transparent"
+p$layers[[1]]$geom_params$outlier_gp$fill <- "black"
+
+p
+```
+
+#### olink_qc_plot
+
+Generates a facet plot per Panel using ggplot2::ggplot and ggplot2::geom_point and stats::IQR plotting IQR vs. median for all samples. Horizontal dashed lines indicate +/-IQR_outlierDef standard deviations from the mean IQR (default 3). Vertical dashed lines indicate +/-median_outlierDef standard deviations from the mean sample median (default 3).
+
+```{r}
+#| label: fig-qc-plot
+#| fig-cap: "Olink QC plot"
+#| fig-width: 10
+#| fig-height: 6
+
+### Negative controls should be excluded
+qc <- olink_qc_plot(rp2_npx |> filter(SampleType=="SAMPLE"), color_g = "PlateID", IQR_outlierDef = 3, median_outlierDef = 3)
+
+qc 
+
+outliers <- qc$data %>% filter(Outlier == 1)
+outliers
+```
+
+#### PCA plot
+
+```{r}
+#| label: fig-pca-plot
+#| fig-cap: "Olink PCA plot"
+#| fig-subcap: 
+#|   - "Color by SampleQC"
+#|   - "Color by PlateID"
+#| layout-ncol: 1
+#| fig-width: 10
+#| fig-height: 6
+
+olink_pca_plot(rp2_npx |> filter(SampleType=="SAMPLE"), color_g = "SampleQC")
+
+olink_pca_plot(rp2_npx |> filter(SampleType=="SAMPLE"), color_g = "PlateID")
+```
+
+#### UMAP plot
+
+```{r}
+#| label: fig-umap-plot
+#| fig-cap: "Olink UMAP plot"
+#| fig-subcap: 
+#|   - "Color by SampleQC"
+#|   - "Color by PlateID"
+#| layout-ncol: 1
+#| fig-width: 10
+#| fig-height: 6
+
+olink_umap_plot(rp2_npx |> filter(SampleType=="SAMPLE"), color_g = "SampleQC")
+
+olink_umap_plot(rp2_npx |> filter(SampleType=="SAMPLE"), color_g = "PlateID")
+```
+
+------------------------------------------------------------------------
+
+### 7. Integrating LOD
+
+NPX values below Limit of Detection (LOD) are not reliable. In the `OlinkAnalyze` R package, the `olink_lod()` function provides two primary methods for integrating Limit of Detection (LOD) information into Olink Explore datasets:
+
+-   Negative Control LOD (NCLOD)
+
+    This method calculates LOD values based specifically on the **negative controls included within your own study's dataset**.
+
+    -   **How it works:** It uses the negative controls to determine the background noise. For assays with higher counts, it typically calculates the median NPX plus 3 standard deviations (or 0.2 NPX, whichever is larger). For assays with very low counts, it calculates LOD from the count values and converts them to NPX.
+    -   **Requirement:** Your dataset must contain at least **10 negative controls** that have passed quality control (SampleQC).
+    -   **Best For:** Larger projects where you want LOD values tailored to the specific technical conditions and background of your unique experiment.
+
+-   Fixed LOD (FixedLOD)
+
+    This method uses **predetermined LOD values** provided by Olink, rather than calculating them from your current data.
+
+    -   **How it works:** You must download a "Fixed LOD" reference file (CSV) from the Olink Document Download Center. These values are generated by Olink when a new reagent lot is released.
+    -   **Requirement:** You must provide the path to this external CSV file in the `lod_file_path` argument of the function.
+    -   **Best For:** Smaller studies (fewer than 10 negative controls) where there isn't enough internal data to calculate a statistically reliable project-specific LOD.
+
+The latest fixed LOD file is available for download [here](https://7074596.fs1.hubspotusercontent-na1.net/hubfs/7074596/000-documents/10-excel%20file/Explore%20HT_Fixed%20LOD.csv) (see @tbl-fixed-lod-1). This file contains reference data for DataAnalysisRefID (DarID) DX00YY, where X represents blocks 1–8 and YY indicates the reference version (currently ranging from 01 to 14). In the `rp2` study, the DataAnalysisRefID (or data_analysis_ref_id) is designated as D10007 through D80007.
+
+The detailed use of `olink_lod()` is described [here](https://cran.r-project.org/web/packages/OlinkAnalyze/vignettes/LOD.html).
+
+#### Append fixed LOD
+As there are no sufficient negative controls included in `rp2`, we can only apply fixed LOD here.
+```{r}
+#| label: tbl-fixed-lod
+#| tbl-cap: "Olink Explore HT Fixed LOD Analysis"
+#| tbl-subcap: 
+#|   - "Fixed LOD downloaded from Olink website"
+#|   - "Olink NPX data with integrated LOD (LOD and PCNormalizedLOD columns appended)"
+#| layout-nrow: 2
+
+fixedLOD_fn <- "data/Explore HT_Fixed LOD.csv"
+fixedlod.dat <- read.delim2(fixedLOD_fn, sep=';')
+
+# Use kable to ensure Quarto treats these as separate citable tables
+knitr::kable(head(fixedlod.dat))
+
+rp2_lod <- rp2_npx |> 
+  olink_lod(lod_file_path = fixedLOD_fn, lod_method = "FixedLOD")
+
+knitr::kable(head(rp2_lod))
+```
+
+#### Analysis of `RP2` Dataset: Assays with NPX Values Below LOD
+```{r}
+#| label: tbl-lod-cnt
+#| tbl-cap: "Assays with NPX Values Below LOD"
+sample_na_cnts <- rp2_lod |>
+  filter(AssayType=="assay") |>
+  group_by(SampleID, SampleType, PlateID) |>
+  summarise(
+    N=sum(NPX < LOD, na.rm=T),
+    total_assays=n(),
+    non_nas = sum(!is.na(NPX)),
+    .groups="drop"
+  ) |> 
+  group_by(PlateID) |>
+  summarise(
+    Total=first(total_assays),
+    NonNA=first(non_nas),
+    Q1=quantile(N, 0.25, na.rm=T),
+    Median_Below_LOD=quantile(N, 0.50, na.rm=T),
+    Q3=quantile(N, 0.75, na.rm=T),
+    .groups="drop"
+  )
+  
+sample_na_cnts
+```
+------------------------------------------------------------------------
+
+### 8. Advanced analysis
+
+#### Load more sample information
+
+```{r}
+#| label: tbl-sample-info
+#| tbl-cap: "Detailed sample information of rp2"
+
+library(readxl)
+.subj <- read_excel("data/Olink HCC Sample Details.xlsx", skip=1, sheet=1) |>
+  select(1:6) |>
+  setNames(c("subj_id", "aliquot_id", "subsample_id", "subj_type", "sex", "tissue_type"))
+
+.sam <- read_excel("data/Olink HCC Sample Details.xlsx", sheet=4) |>
+  setNames(c("project", "plate_id", "row", "col", "well", "subj_id", "aliquot_id", "subsample_id", "olink_sample_id")) |>
+  select(-row, -col, -well)
+
+### We expect there are 48 samples in CS036024 (Q-13387-3) and 124 samples in RP0084-045
+.sam %$% table(project)
+
+### find out how many CGR samples matched in d1 and rp2
+
+rp2_sam_full <- rp2_sam |>
+  inner_join(.sam, by=join_by(SampleID == olink_sample_id)) |>
+  inner_join(.subj |> select(subj_id, subj_type, sex, tissue_type))
+
+### 20 external contorl samples are not included.  So there are only 124 rows
+rp2_sam_full
+```
+
+#### Customized PCA plot
+
+my_olink_pca(all_fix %\>% filter(SampleID %in% cgr_all\$SampleID), cgr_all, col_by="subj_type", panel_by="plate", ncol=1) ggsave("graphs/Q7.my_pca.all_fix.type.pdf", width=10, height=8)
+
+```{r}
+#| label: fig-mypca-plot
+#| fig-cap: "Customized PCA plot analysis"
+#| fig-subcap: 
+#|    - "Baseline version (reproduced from @fig-pca-plot-2)"
+#|    - "Stratified by Subject Type"
+#|    - "Stratified by Sex"
+#| layout-ncol: 1
+#| fig-width: 10
+#| fig-height: 6
+
+run_olink_pca_workflow(rp2_npx %>% filter(SampleID %in% rp2_sam_full$SampleID), rp2_sam_full, color_by="plate", facet_by = NULL) 
+
+run_olink_pca_workflow(rp2_npx %>% filter(SampleID %in% rp2_sam_full$SampleID), rp2_sam_full, color_by="subj_type", facet_by="plate") 
+
+run_olink_pca_workflow(rp2_npx %>% filter(SampleID %in% rp2_sam_full$SampleID), rp2_sam_full, color_by="sex", facet_by="plate") 
+
+```
+
+#### Intra-CV analysis
++ Based on the Olink Explore HT sample controls, 291 selected assays yielded computable intra- and inter-assay CV values.
++ We defined a function `calc_intraCV_nse` to calculate IntraCV for any replicated samples including those Olink `SAMPLE_CONTROL`.
+  + InterCV can be calcuated in a similar way.
+
+##### 1. Compute Intra-CV for `rp2`
+```{r}
+rp2_npx |> 
+  group_by(PlateID, SampleID) |>
+  summarise(
+    N_IntraCV=sum(!is.na(IntraCV)),
+    N_InterCV=sum(!is.na(InterCV))
+  )
+
+### To better evaludate Olink HT performance, we managed to calculate intra- and inter-CV of all replicated samples, including Sample Controls
+rp2_intraCV <- calc_intraCV_nse(rp2_lod, rp2_sam_full, rp2_sam)
+
+### Our calculation should be matched with the Olink intraCV in those 291 assays
+.dat <- rp2_intraCV |>
+  filter(PlateID=="PlateLayout_RP0084-045_B_ExploreHT (3)" & subsample_id == "SAMPLE_CONTROL") |>
+  select(OlinkID, newIntraCV=IntraCV) |>
+  inner_join(
+    rp2_npx |> 
+      filter(PlateID=="PlateLayout_RP0084-045_B_ExploreHT (3)" & !is.na(IntraCV))|>
+      select(OlinkID, IntraCV) |> 
+      unique() # all samples have the same intraCV in the plate
+  )
+
+### all matched
+.dat %$% table(newIntraCV - IntraCV < 1e-5, useNA="ifany")
+```
+
+##### 2. Get the median of IntraCV of each assay
+```{r}
+rp2_intraCV.median <- rp2_intraCV |> 
+  mutate(
+    SampleType = ifelse(grepl("_CONTROL",subsample_id), subsample_id, "SAMPLE")
+  ) |> 
+  filter(AssayType == "assay" ) |>
+  group_by(OlinkID, PlateID, SampleType) |> 
+  summarise(IntraCV_median = median(IntraCV, na.rm=T), .groups="drop")
+```
+
+##### 3. Summary median Intra-CV by SampleType for each plate
+```{r}
+#| label: tbl-intracv-all
+#| tbl-cap: "IntraCV with all NPX"
+
+rp2_intraCV.sum_all <- rp2_intraCV.median |>
+  group_by(PlateID, SampleType) |> 
+  summarise(
+    N=n(),
+    Q1=quantile(IntraCV_median, 0.25, na.rm=T),
+    Q2=quantile(IntraCV_median, 0.50, na.rm=T),
+    Q3=quantile(IntraCV_median, 0.75, na.rm=T),
+    .groups="drop"
+  )
+
+
+# Use kable to render the data frame as a formal table
+knitr::kable(rp2_intraCV.sum_all)
+
+```
+
+
+##### 4. Make plots as [Rooney et al, 2025](./data/Rooney2025_ARIC.pdf) 
+
+```{r}
+#| label: fig-Rooney
+#| fig-cap: "IntraCV with all NPX"
+#| fig-subcap:
+#|   - "Distribution of IntraCV (similar to Fig 1A. in [Rooney et al, 2025])"
+#|   - "Scatterplot of the percentage of participants with protein values above the LOD vs CV (displayed on the log2 scale) on the Olink Explore HT (similar to Fig 2. in [Rooney et al, 2025])"
+#| fig-width: 14
+#| fig-height: 8 
+
+
+### Fig1
+rp2_intraCV.median |>
+
+  mutate(IntraCV_median=ifelse(IntraCV_median> 50, 50, IntraCV_median)) |>
+  ggplot(aes(x=IntraCV_median, fill=PlateID)) +
+    geom_density( alpha=0.2) +
+    facet_grid(. ~ SampleType) + 
+    theme(legend.position = "bottom")
+
+### Fig 2
+.dat <- rp2_lod |> 
+  filter(SampleType=="SAMPLE") |>
+  group_by(OlinkID, PlateID) |>
+  summarise(
+    Perc_gtLOD = mean(NPX>LOD, na.rm=T),
+    .groups='drop'
+  ) |>
+  inner_join(
+      rp2_intraCV.median |> filter(SampleType == "SAMPLE")
+  )
+
+# Assuming your data is in a data frame named 'df'
+ggplot(data = .dat, aes(x = Perc_gtLOD, y = IntraCV_median, col=PlateID)) +
+  geom_point(size = 1, alpha = 0.8) +
+  geom_smooth(method = "lm", 
+              formula = y ~ x, 
+              color = "black", 
+              linetype = "dashed", 
+              linewidth = 0.8,
+              # This line is crucial: the plot description mentions the CV 
+              # was log2 transformed for the regression.
+              # However, since we are showing the line on a log10 axis, 
+              # it is best to let ggplot handle the scale transformation 
+              # or ensure the CV data is already log2 transformed 
+              # for the fit, which is complex. 
+              # A simpler interpretation is to fit the line to the data shown on the plot:
+              se = FALSE) +
+  scale_y_log10() + facet_wrap(~PlateID) + theme(legend.position = "bottom")
+```
+
+##### 5. Filtering NPX < LOD to improve intra-CV
+As demonstrated in @fig-Rooney-2, the precision (CV) of Olink Explore HT assays is strongly inversely correlated with protein detectability (the percentage of samples above the validation LOD). To improve data quality, we recoded NPX values below the LOD as NA. We then generated a summary table of the intra-CV, mirroring the previous analysis where all NPX values were included, to evaluate the resulting improvement in precision.
+
+```{r}
+#| label: tbl-intracv-lod
+#| tbl-cap: 'IntraCV with NPX $\ge$ LOD'
+
+rp2_intraCV_lod <- calc_intraCV_nse(rp2_lod, rp2_sam_full, rp2_sam, treat_LOD_as_NA = T)
+
+rp2_intraCV.median_lod <- rp2_intraCV_lod |> 
+  mutate(
+    SampleType = ifelse(grepl("_CONTROL",subsample_id), subsample_id, "SAMPLE")
+  ) |> 
+  filter(AssayType == "assay" ) |>
+  group_by(OlinkID, PlateID, SampleType) |> 
+  summarise(IntraCV_median = median(IntraCV, na.rm=T), .groups="drop")
+  
+  
+rp2_intraCV.sum_lod <- rp2_intraCV.median_lod |>
+  group_by(PlateID, SampleType) |> 
+  summarise(
+    N=n(),
+    Q1=quantile(IntraCV_median, 0.25, na.rm=T),
+    Q2=quantile(IntraCV_median, 0.50, na.rm=T),
+    Q3=quantile(IntraCV_median, 0.75, na.rm=T),
+    .groups="drop"
+  )
+
+
+# Use kable to render the data frame as a formal table
+knitr::kable(rp2_intraCV.sum_lod)
+```
+
+::: {.callout-note}
+Note that assay precision (Intra-CV) is markedly higher after filtering for detectability (@tbl-intracv-lod) compared to the full dataset (@tbl-intracv-all)
+:::

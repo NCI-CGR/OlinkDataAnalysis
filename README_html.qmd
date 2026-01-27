@@ -1,0 +1,27 @@
+---
+title: "Olink Pilot Study: Analysis Tutorial"
+author: "Wei Zhu"
+date: "2025-12-17"
+format: 
+  html:
+    toc: true
+    toc-depth: 5 
+    toc-expand: 1 
+    toc-location: left 
+    smooth-scroll: true 
+    theme: cosmo 
+    embed-resources: true
+    output-file: index.html
+    highlight-style: pygments  # Try 'tango', 'espresso', or 'zenburn'
+    code-annotations: below
+    code-copy: True
+    df-print: paged
+---
+
+------------------------------------------------------------------------
+
+
+{{< include olink_introduction.qmd >}}
+
+{{< include olink_r_analysis.qmd >}}
+

@@ -1,0 +1,153 @@
+
+## Introduction
+### 1. Platform Overview: Olink Explore HT
+
+Olink High-Throughput (HT) proteomic platform that combines the specificity of **Proximity Extension Assay (PEA)** with **Next-Generation Sequencing (NGS)** readout. 
+
+#### Key Features
+* **Multiplexing**: Simultaneously measures **5,420 protein biomarkers** organized into **8 blocks**  [ExploreHT_Validation.pdf](./data/ExploreHT_Validation.pdf).
+* **Dynamic Range**: Achieves a 10-log dynamic range by utilizing different sample dilutions within the blocks.
+* **Sample Efficiency**: Requires only **2 µL** of sample for the entire panel.
+
+
+---
+
+### 2. Core Terminology & Data Structure
+
+* **Projects**: A set of plates that run at the same time and have been normalized together. If two projects are not randomized or are run at different times then additional normalization is required. A project encapsulates all metadata and run results for a specific study. Each project consists of one or more plates. [NPX_Manual.pdf](./data/NPX_Manual.pdf).
+* **Plates**: The physical processing units, typically utilizing a standard 96-well format.
+* **Assays**: Individual antibody-based tests designed for specific protein targets. The Olink Explore HT system, for example, features 5,420 protein biomarkers (assays) organized into 8 blocks. Each block includes internal controls: one incubation control, one extension control, and one amplification control. This results in a total of 5,444 assays per sample.   
+* **Normalization**: The conversion of raw NGS counts into **NPX (Normalized Protein Expression)**, a relative $log_2$ scale. 
+  + Plate Control (PC) Normalization: PC normalization is the standard "baseline" normalization. It uses internal controls (Plate Controls) included in every run to account for technical variation between different plates.
+  $$NPX_{i,j} = ExtNPX_{i,j} - \text{median}(ExtNPX_{i, \text{Plate Controls}})$$
+    - ::: {.callout-note}
+      More generally, when the Plate Controls in a dataset differ from the reference Plate Control lot used by the analysis pipeline, an internal Plate Control Lot Factor can be applied to Plate Control extNPX values to align them to that reference.
+      
+      $$ExtNPX_{i, PC} (\text{adjusted}) = ExtNPX_{i, PC} (\text{raw}) + \text{PC Lot Factor}_i$$
+      Therefore, the actual PC normalization formula is: 
+      $$NPX_{i,j} = ExtNPX_{i,j} - \text{median}(ExtNPX_{i, \text{Plate Controls}}) - \text{PC Lot Factor}_i$$
+      :::
+      
+  + Intensity Normalization: Intensity normalization is a "global" adjustment that uses the actual biological samples to align plates. It is designed to further reduce technical noise and increase statistical power.
+  $$NPX_{i,j} = ExtNPX_{i,j} - \text{median}(ExtNPX_{i, \text{Samples}})$$
+    - Normalize by median of samples (excluding control strip).
+
+
+  
+
+---
+
+### 3. Control Systems & Quality Control (QC)
+
+The platform relies on a sophisticated hierarchy of controls to ensure data quality  [ExploreHT_QC.pdf](./data/ExploreHT_QC.pdf).
+
+#### Internal and external controls
+
+![Internal and external controls](./img/Olink_controls.png){#fig-olink-controls}
+
+#### The QC workflow
+
+![Olink QC workflow](./img/qc_workflow.png){#fig-qc-workflow fig-align="center" width="50%" }
+
+#### Plate QC
+* **Sample QC**: Samples and external controls that fail Sample QC will not be considered for additional QC steps and not normalized. Only counts will be reported for those.
+* **Assay QC**: Detection of high number of counts for any assay, relative to the internal controls, in any of the Negative Controls is considered as unexpected signal. This step is performed on Negative Controls that pass Sample QC.
+
+
+---
+
+### 4. Platform Reliability: The "CV Gap"
+
+There is a documented discrepancy between manufacturer-reported reliability and independent study results.
+
+#### Olink Internal Validation
+Official metrics report high precision [ExploreHT_Validation.pdf](./data/ExploreHT_Validation.pdf):
+* **IntraCV (Within-plate)**: Median ~11.2%.
+* **InterCV (Between-plates)**: Median ~8.7%.
+
++ Distribution of intra-and inter CVs
+
+
+![Distribution of intra-and inter CVs](./img/Olink_CV_distribution.png){#fig-cv-distribution fig-align="center" width="100%"}
+
++ [CIMAC_Validation.pdf](./data/CIMAC_Validation.pdf)
+124 plasma samples (from 115 cancer patients, 5 individual health donor, 1 pooled plasma from healthy
+donors) were assayed using Olink Explore HT. The CV for each block was assessed by NPX values of ***selected (5%)*** of the analytes among replicates of sample controls, per Olink protocol.
+
+| Block | # of assays | Dilution factor | Intra-assay %CV mean | Inter-assay %CV mean |
+|:-----:|:-----------:|:---------------:|:--------------------:|:--------------------:|
+|   1   |     742     |       1:1       |         23.3         |         20.7         |
+|   2   |    1314     |       1:1       |         13.3         |         11.8         |
+|   3   |    1204     |       1:1       |         9.8          |         7.1          |
+|   4   |    1106     |       1:1       |         7.2          |         3.5          |
+|   5   |     582     |      1:10       |         6.6          |         3.8          |
+|   6   |     270     |      1:100      |         5.6          |         5.3          |
+|   7   |     134     |     1:1000      |         11.0         |         6.2          |
+|   8   |      68     |    1:100,000    |         8.6          |         12.4         |
+
+: CV (%) of sample controls {#tbl-cimac-table6 .striped .hover}
+
+::: {.callout-note}
+A subset of ***291 selected assays (~5%)*** that are used to assess CVs in Olink validation. This subset is based on proteins that are typically well-expressed in healthy plasma to enable the calculation of *reliable* CV values.
+:::
+
+#### Third-Party Findings (Rooney et al., 2025)
++ Independent evaluation using the ARIC cohort (102 split samples) reported lower precision  [Rooney2025_ARIC.pdf](./data/Rooney2025_ARIC.pdf):
+* **Median CV**: **35.7%** for the whole Explore HT panel and **17.6%** after excluding values < LOD.
+* **Conclusion**: High variation is often driven by the large number of assays residing near the technical noise floor in clinical samples.
+
+
+---
+
+### 5. Handling the Limit of Detection (LOD)
+
+The LOD is the threshold where the protein signal is statistically distinguishable from the Negative Control background.
+
+#### LOD and Data Quality
+Reliability is strongly tied to the signal-to-noise ratio [Rooney2025_ARIC.pdf](./data/Rooney2025_ARIC.pdf):
+* Precision is inversely correlated with the percentage of samples above LOD ($r = -0.77$).
+* Assays where $NPX < LOD$ are dominated by technical noise, leading to artificially inflated CVs.
+
+#### Best Practices
+1.  **Filtering for Validation**: When calculating IntraCV or InterCV, **exclude** data points where $NPX < LOD$.
+2.  **Imputation for Analysis**: For biological discovery, Olink recommends original NPX. However, some researchers replace values below LOD with $LOD/2$ to stabilize correlation analysis.
+3.  **Reporting**: Always report the "Percent Above LOD" for every assay as a primary quality metric.
+
+---
+
+### 6. Output of Olink HT
+#### Parquet file (comparessed data frame)
+
+| Column | Description | Type | Typical value |
+|-----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|----------------------------------------------------|
+| SampleID | The annotated sample ID | String | |
+| Sample Type | Type of sample | String | PLATE_CONTROL, NEGATIVE_CONTROL, CONTROL, SAMPLE |
+| WellID | Id for well | String | Capital letter A–H followed by number 1–12 |
+| PlateID | Name of the plate the sample was run on | String | |
+| DataAnalysisRefID | Reference ID for data analysis | String | |
+| OlinkID | OlinkID for assay | String | |
+| UniProt | UniProt ID for assay | String | |
+| Assay | Gene name for assay | String | |
+| AssayType | Type of assay | String | Amp_ctrl, inc_ctrl, ext_ctrl |
+| Panel | Panel name | String | Explore_HT |
+| Block | Name of the block the sample was run on | String | 1, 2, 3, 4, 5, 6, 7, or 8 |
+| Count | The total number of counts | Integer | Greater than or equal to 1 |
+| ExtNPX | Intermediate value between count and NPX: log2 of the ratio between data-point Count value and the count for the Extension Control assay for the same sample. | Double | -1.94701 |
+| NPX | NPX value | Double | |
+| Normalization | Type of normalization used in project | String | Plate control, Intensity or EXCLUDED |
+| PCNormalizedNPX | NPX value displayed if plate control normalization has been chosen. | Double | 1.735509 |
+| AssayQC | Overall QC status for an assay | String | NA, PASS, WARN |
+| SampleQC | Overall QC status for a sample in a block | String | NA, PASS, WARN, FAIL |
+| ExploreVersion | Software version of the module in NPX Explore HT & 3072 | String | |
+
+: Olink NPX Explore HT Data Column Specifications {#tbl-olink-specs .striped .hover tbl-colwidths="[18,40,10,32]"}
+
+::: {.callout-tip}
+## Choosing Between PC and Intensity Normalization
+
+Olink provides normalized Parquet outputs upon request or based on experimental design (e.g., sample randomization). Intensity normalization is generally recommended as the primary method. This is because the standard NPX column will contain Intensity-normalized values, while PC-normalized values remain accessible via the dedicated PCNormalizedNPX column.
+:::
+
+#### Olink Analysis report
++ QC summary: Samples passed QC
++ List of assays failed QC 

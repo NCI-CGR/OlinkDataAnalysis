@@ -1,0 +1,6 @@
+project:
+  output-dir: docs
+
+execute:
+  freeze: auto
+  cache: true # Optional: caches individual chunks as well

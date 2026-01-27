@@ -1,0 +1,6 @@
+# This would apply to all files in the Olink folder
+toc: true
+number-sections: false
+format:
+  html:
+    theme: cosmo
